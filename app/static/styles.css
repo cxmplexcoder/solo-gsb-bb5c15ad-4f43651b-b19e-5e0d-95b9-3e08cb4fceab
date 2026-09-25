@@ -467,6 +467,37 @@ tr.dg-detail-row td { background: #fbfcfe; padding: 10px 14px; }
 .dg-pref-b { color: var(--red); font-size: 12px; white-space: nowrap; }
 .dg-foot { margin-top: 8px; margin-bottom: 0; }
 
+/* ---------- Judge offset diagnosis (read-only) ---------- */
+.offsets-panel .jo-banner {
+  background: #f5f8ff;
+  border: 1px solid #dbe6ff;
+  border-radius: 8px;
+  padding: 10px 14px;
+  font-size: 13px;
+  color: #33455f;
+  margin-bottom: 10px;
+}
+.jo-banner .jo-note { color: var(--muted); }
+.jo-no { color: var(--muted); }
+.jo-lenient { color: var(--red); font-weight: 600; }
+.jo-severe { color: var(--primary); font-weight: 600; }
+.jo-neutral { color: var(--muted); }
+.jo-res { color: var(--amber); }
+.jo-vs { color: var(--muted); }
+.jo-table-wrap { margin-bottom: 6px; }
+tr.jo-not-estimable td { background: #f7f8fa; color: var(--muted); }
+.jo-no-badge {
+  display: inline-block;
+  background: #eef1f5;
+  color: var(--muted);
+  border-radius: 4px;
+  padding: 1px 8px;
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.jo-foot { margin-top: 8px; margin-bottom: 0; }
+
 /* ---------- Supplementary scoring assignment (read-only) ---------- */
 .backfill-controls .bf-target {
   display: flex;
@@ -507,7 +538,7 @@ tr.bf-unmet-row td { background: #fdf3f3; }
 tr.bf-met-row td { background: #f4faf6; }
 .bf-elig { color: var(--muted); font-size: 12px; }
 
-/* ---------- ⑩ 项目权重临界点分析 ---------- */
+/* ---------- ⑪ 项目权重临界点分析 ---------- */
 .weight-controls { flex-wrap: wrap; align-items: center; gap: 10px; }
 .weight-controls label { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; }
 .weight-controls .select { min-width: 120px; }

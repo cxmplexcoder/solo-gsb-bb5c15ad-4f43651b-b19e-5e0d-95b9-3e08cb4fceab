@@ -189,6 +189,7 @@ function render() {
   renderReversals();
   renderRanks();
   renderDisagreement();
+  renderJudgeOffsets();
   initRuleDraft();
   renderDetails();
   renderStability();
@@ -621,9 +622,94 @@ function renderDisagreement() {
   });
 }
 
+// ---------- Judge leniency/severity offset diagnosis (read-only, raw scores only) ----------
+const OFFSET_EPS = 1e-9;
+
+function offsetTendency(offset) {
+  if (offset > OFFSET_EPS) return `<span class="jo-lenient">偏宽</span>`;
+  if (offset < -OFFSET_EPS) return `<span class="jo-severe">偏严</span>`;
+  return `<span class="jo-neutral">居中</span>`;
+}
+
+function renderJudgeOffsets() {
+  const panel = $("#offsets-panel");
+  if (!panel) return;
+  const jo = analysis.judge_offsets;
+  if (!jo || jo.summary.judges === 0) {
+    panel.innerHTML = `<p class="no-reversal">当前数据没有评委，无法进行严宽差异诊断。</p>`;
+    return;
+  }
+  const s = jo.summary;
+
+  const banner = `
+    <div class="jo-banner">
+      共 <b>${s.judges}</b> 位评委：可估计 <b>${s.estimable_judges}</b> 位
+      （分属 <b>${s.components}</b> 个连通分量，各分量内偏移量均值为零），
+      <span class="jo-no">不可估计 <b>${s.non_estimable_judges}</b></span> 位（无共评边）。
+      评委对 <b>${s.pairs}</b> 对，共评记录合计 <b>${s.common_records}</b> 条；
+      加权残差平方和 <b>${fmt(s.weighted_residual_ss, 4)}</b>，
+      最大绝对残差 <b class="${s.max_abs_residual > OFFSET_EPS ? "jo-res" : ""}">${s.max_abs_residual === null ? "—" : fmt(s.max_abs_residual, 4)}</b>
+      <span class="jo-note">（残差大表示该评委对的观测分差无法被分量内偏移量一致解释）。</span>
+    </div>`;
+
+  const judgeRows = jo.judges.map((j) => {
+    if (!j.estimable) {
+      return `
+      <tr class="jo-row jo-not-estimable">
+        <td>${esc(j.judge)}</td>
+        <td class="num">—</td>
+        <td class="num"><span class="jo-no-badge">不可估计</span></td>
+        <td><span class="jo-neutral">—</span></td>
+        <td class="num">${j.coverage}</td>
+        <td class="num">${j.partners}</td>
+      </tr>`;
+    }
+    return `
+      <tr class="jo-row">
+        <td>${esc(j.judge)}</td>
+        <td class="num">分量 ${j.component}</td>
+        <td class="num"><b>${signedNum(j.offset, 3)}</b></td>
+        <td>${offsetTendency(j.offset)}</td>
+        <td class="num">${j.coverage}</td>
+        <td class="num">${j.partners}</td>
+      </tr>`;
+  }).join("");
+  const judgeTable = `
+    <h3 class="sub">评委偏移量与共评覆盖（偏移量为分量内相对值，均值为零，不跨分量比较）</h3>
+    <div class="table-wrap jo-table-wrap"><table>
+      <tr><th>评委</th><th class="num">连通分量</th><th class="num">偏移量<br>(+偏宽 / −偏严)</th>
+        <th>相对倾向</th><th class="num">共评<br>覆盖量</th><th class="num">共评<br>评委数</th></tr>
+      ${judgeRows}
+    </table></div>`;
+
+  const pairRows = jo.pairs.map((p) => `
+      <tr class="jo-row">
+        <td class="num">分量 ${p.component}</td>
+        <td>${esc(p.judge_a)}<span class="jo-vs"> × </span>${esc(p.judge_b)}</td>
+        <td class="num">${p.common_count}</td>
+        <td class="num">${signedNum(p.observed_diff, 3)}</td>
+        <td class="num">${signedNum(p.fitted_diff, 3)}</td>
+        <td class="num"><b class="${Math.abs(p.residual) > OFFSET_EPS ? "jo-res" : "delta-flat"}">${signedNum(p.residual, 3)}</b></td>
+      </tr>`).join("");
+  const pairTable = `
+    <h3 class="sub">评委对分差拟合（观测 = 共评记录原始分差中位数，权重 = 共评数）</h3>
+    <div class="table-wrap jo-table-wrap"><table>
+      <tr><th class="num">连通分量</th><th>评委对</th><th class="num">共评数</th>
+        <th class="num">观测分差<br>(甲−乙)</th><th class="num">拟合分差<br>(甲−乙)</th><th class="num">残差<br>(观测−拟合)</th></tr>
+      ${pairRows || '<tr><td colspan="6" class="no-reversal">没有任何评委对共同评过同一「选手 × 项目」。</td></tr>'}
+    </table></div>`;
+
+  panel.innerHTML = banner + judgeTable + pairTable + `
+    <p class="hint jo-foot">
+      所有数字仅由<b>原始分</b>计算：观测分差 = 两位评委共同评过的「选手 × 项目」记录上
+      原始分差（评委甲 − 评委乙）的中位数，共评记录数为权重；逐连通分量做加权最小二乘拟合，
+      各分量内偏移量均值为零（正 = 相对偏宽，负 = 相对偏严），<b>不跨分量比较</b>；
+      无共评边的评委标为「不可估计」。切换校准范围、逐项裁决或规则批处理都不会改变本面板。
+    </p>`;
+}
+
 function renderGroups() {
-  const byItem = analysis.scope === "judge_item";
-  const head = byItem
+  const byItem = analysis.scope === "judge_item";  const head = byItem
     ? `<tr><th>评委</th><th>项目</th><th class="num">条数</th><th class="num">中位数</th><th class="num">MAD</th><th class="num">MAD×1.4826</th></tr>`
     : `<tr><th>评委</th><th class="num">条数</th><th class="num">中位数</th><th class="num">MAD</th><th class="num">MAD×1.4826</th></tr>`;
   const rows = analysis.groups.map((g) => {

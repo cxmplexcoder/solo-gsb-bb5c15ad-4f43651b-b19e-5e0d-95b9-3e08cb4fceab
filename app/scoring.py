@@ -19,6 +19,8 @@ from collections import defaultdict
 from statistics import median
 from typing import Any, Iterable, Mapping, Sequence
 
+from .judge_offsets import judge_offset_diagnosis
+
 MAD_K = 1.4826
 
 SCOPE_JUDGE = "judge"
@@ -392,6 +394,8 @@ def analyze(
         "reversals": reversals,
         # 评委排序分歧：仅基于原始分，与校准范围和裁决无关，随导入/合并实时刷新。
         "judge_disagreement": judge_disagreement(records),
+        # 评委严宽差异诊断：仅基于原始分，与校准范围和裁决无关，随导入/合并实时刷新。
+        "judge_offsets": judge_offset_diagnosis(records),
         "counts": {
             "scores": len(records),
             "contestants": len(contestants),

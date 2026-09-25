@@ -13,6 +13,7 @@ from pydantic import BaseModel, Field
 from . import database as db
 from .backfill import BackfillValidationError, plan_backfill
 from .csv_io import CSVParseError, build_audit_csv, parse_scores
+from .judge_offsets import judge_offset_diagnosis
 from .merge import (
     STATUS_LABELS as MERGE_STATUS_LABELS,
     MergeValidationError,
@@ -465,6 +466,25 @@ def compare_two_contestants(session_id: str, a: str, b: str) -> dict[str, Any]:
         return compare_contestants(analysis, a, b)
     except (LookupError, ValueError) as exc:
         raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.get("/api/sessions/{session_id}/judge-offsets")
+def judge_offsets(session_id: str) -> dict[str, Any]:
+    """评委严宽差异诊断（只读，仅基于原始分）。
+
+    仅用原始分：在每对评委共同评过的「选手 × 项目」记录上计算原始分差
+    （评委甲 − 评委乙）的中位数与共评数，以共评数为权重对评委关系图
+    逐连通分量做加权最小二乘拟合（各分量内偏移量均值为零，不跨分量比较）。
+    无共评边的评委标为不可估计。每次请求实时重算，不受校准范围与裁决影响，
+    不写入任何数据。
+    """
+    with db.get_conn() as conn:
+        if db.get_scope(conn, session_id) is None:
+            raise HTTPException(status_code=404, detail="会话不存在，请先上传数据。")
+        records = db.load_scores(conn, session_id)
+    if not records:
+        raise HTTPException(status_code=404, detail="当前会话没有评分数据，无法进行严宽差异诊断。")
+    return judge_offset_diagnosis(records)
 
 
 @app.post("/api/sessions/{session_id}/backfill/preview")
