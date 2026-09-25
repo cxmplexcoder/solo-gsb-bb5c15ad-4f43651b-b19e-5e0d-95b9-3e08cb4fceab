@@ -39,6 +39,10 @@ let pendingData = null; // 待补评分名次边界最近一次只读结果（�
 let pendingReqId = 0; // 丢弃过期的名次边界响应
 let pendingSig = ""; // 最近一次名次边界所基于的（范围+最终分+评分数）签名
 let pendingStale = false; // 参数在上次计算后又被修改
+let leniencyData = null; // 评委严宽差异诊断最近一次只读结果（仅依赖原始分）
+let leniencyReqId = 0; // 丢弃过期的诊断响应
+let leniencySig = ""; // 最近一次诊断所基于的原始评分签名
+let leniencyError = ""; // 最近一次诊断请求的失败信息（成功时清空）
 
 const $ = (sel) => document.querySelector(sel);
 const dashboard = $("#dashboard");
@@ -109,6 +113,11 @@ function render() {
     pendingSig = "";
     pendingStale = false;
     renderPendingPanel();
+    leniencyReqId += 1;
+    leniencyData = null;
+    leniencySig = "";
+    leniencyError = "";
+    renderLeniency();
     return;
   }
   emptyState.hidden = true;
@@ -170,6 +179,17 @@ function render() {
   }
   renderPendingPanel();
   if (pendingAutoRun) runPendingCheck({ auto: true });
+
+  // 严宽差异诊断仅依赖原始分：导入/合并/载入示例改变原始评分时自动重算；
+  // 切换校准范围或修改裁决不会改变结果，也不会触发重新请求。
+  const ls = leniencySignature(analysis);
+  if (ls !== leniencySig) {
+    leniencySig = ls;
+    leniencyData = null;
+    leniencyError = "";
+    runLeniencyDiagnosis();
+  }
+  renderLeniency();
 
   const ref = analysis.reference;
   $("#reference-info").innerHTML =
@@ -619,6 +639,127 @@ function renderDisagreement() {
   panel.querySelectorAll(".dg-detail-row").forEach((detail) => {
     detail.addEventListener("click", (ev) => ev.stopPropagation());
   });
+}
+
+// ---------- Judge leniency/severity diagnosis (read-only, raw scores only) ----------
+// 签名仅由原始分构成：校准范围与逐项/批处理裁决不会改变诊断结果，
+// 只有导入/合并/载入示例导致原始评分变化时才重新请求。
+function leniencySignature(a) {
+  const parts = [];
+  for (const b of a.contestants) {
+    for (const ib of b.items) {
+      for (const s of ib.scores) {
+        parts.push(`${b.contestant}|${s.judge}|${ib.item}|${Number(s.raw).toFixed(10)}`);
+      }
+    }
+  }
+  parts.sort();
+  return parts.join("#");
+}
+
+function runLeniencyDiagnosis() {
+  if (!analysis || analysis.counts.scores === 0) return;
+  const myId = ++leniencyReqId;
+  api(`/api/sessions/${SESSION_ID}/leniency`)
+    .then((data) => {
+      if (myId !== leniencyReqId) return; // 已有更新的请求
+      leniencyData = data;
+      leniencyError = "";
+      renderLeniency();
+    })
+    .catch((err) => {
+      if (myId !== leniencyReqId) return;
+      leniencyData = null;
+      leniencyError = err.message;
+      renderLeniency();
+    });
+}
+
+function renderLeniency() {
+  const panel = $("#leniency-panel");
+  if (!panel) return;
+  if (!analysis || analysis.counts.scores === 0) {
+    panel.innerHTML = "";
+    return;
+  }
+  if (leniencyError) {
+    panel.innerHTML = `<p class="ln-error">严宽差异诊断加载失败：${esc(leniencyError)}</p>`;
+    return;
+  }
+  if (!leniencyData) {
+    panel.innerHTML = `<p class="hint">诊断计算中…</p>`;
+    return;
+  }
+  const d = leniencyData;
+  const s = d.summary;
+
+  const compText = d.components.length
+    ? d.components.map((c) => `分量 ${c.id + 1}（${c.judges.map(esc).join("、")}）`).join("；")
+    : "无（没有任何共评评委对）";
+  const rmseText = s.weighted_rmse === null ? "—" : fmt(s.weighted_rmse, 4);
+  const banner = `
+    <div class="ln-banner">
+      共 <b>${s.judges}</b> 位评委：可估计 <b>${s.estimable_judges}</b> 位
+      （<b>${s.components}</b> 个连通分量），
+      <span class="ln-unestimable">不可估计 <b>${s.unestimable_judges}</b> 位</span>；
+      有共评的评委对 <b>${s.judge_pairs}</b> 对，共评记录合计 <b>${s.co_ratings}</b> 条，
+      整体加权残差均方根 <b>${rmseText}</b>。<br>
+      <span class="ln-note">连通分量：${compText}。偏移量为分量内相对值（分量内均值 0），不跨分量比较；正 = 偏宽，负 = 偏严。</span>
+    </div>`;
+
+  const dirBadge = (row) => {
+    if (!row.estimable) return `<span class="ln-badge-unestimable">不可估计</span>`;
+    const cls = row.direction === "lenient" ? "ln-lenient"
+      : row.direction === "strict" ? "ln-strict" : "ln-neutral";
+    return `<span class="${cls}">${esc(d.direction_labels[row.direction])}</span>`;
+  };
+  const judgeRows = d.judges.map((row) => `
+    <tr class="${row.estimable ? "" : "ln-row-unestimable"}">
+      <td>${esc(row.judge)}</td>
+      <td class="num">${row.estimable ? `分量 ${row.component + 1}` : "—"}</td>
+      <td class="num">${row.estimable ? `<b>${signedNum(row.offset)}</b>` : "—"}</td>
+      <td>${dirBadge(row)}</td>
+      <td class="num">${row.coverage}</td>
+      <td class="num">${row.partners}</td>
+    </tr>`).join("");
+  const judgeTable = `
+    <h3 class="sub">评委偏移量（分量内相对偏移，各分量均值 0）</h3>
+    <div class="table-wrap ln-table-wrap"><table>
+      <tr><th>评委</th><th class="num">连通<br>分量</th><th class="num">相对<br>偏移量</th>
+        <th>宽严方向</th><th class="num">共评<br>覆盖量</th><th class="num">共评<br>评委数</th></tr>
+      ${judgeRows}
+    </table></div>`;
+
+  let pairTable;
+  if (d.pairs.length) {
+    const pairRows = d.pairs.map((p) => `
+      <tr>
+        <td>${esc(p.judge_a)}<span class="ln-vs"> × </span>${esc(p.judge_b)}</td>
+        <td class="num">分量 ${p.component + 1}</td>
+        <td class="num">${p.common_count}</td>
+        <td class="num">${signedNum(p.observed_diff)}</td>
+        <td class="num">${signedNum(p.fitted_diff)}</td>
+        <td class="num"><b class="${Math.abs(p.residual) > 1e-9 ? "ln-resid" : "delta-flat"}">${signedNum(p.residual)}</b></td>
+      </tr>`).join("");
+    pairTable = `
+      <h3 class="sub">评委对分差拟合（观测 = 共评原始分差中位数，拟合 = 偏移量之差）</h3>
+      <div class="table-wrap ln-table-wrap"><table>
+        <tr><th>评委对</th><th class="num">连通<br>分量</th><th class="num">共评数</th>
+          <th class="num">观测分差<br>（甲−乙）</th><th class="num">拟合分差<br>（甲−乙）</th>
+          <th class="num">残差</th></tr>
+        ${pairRows}
+      </table></div>`;
+  } else {
+    pairTable = `<p class="no-reversal">当前数据没有任何共评评委对（需要两位评委给同一「选手 × 项目」都打分）。</p>`;
+  }
+
+  panel.innerHTML = banner + judgeTable + pairTable + `
+    <p class="hint ln-foot">
+      观测分差 = 该对评委在同一「选手 × 项目」共评记录上（评委甲原分 − 评委乙原分）的中位数；
+      拟合以共评数为权重逐连通分量做最小二乘，并约束各分量内偏移量均值为 0；残差 = 观测 − 拟合；
+      共评覆盖量 = 该评委参与的共评记录总数。所有数字仅由<b>原始分</b>计算，
+      切换校准范围、逐项裁决或规则批处理都不会改变本面板；导入或合并数据后自动刷新。
+    </p>`;
 }
 
 function renderGroups() {

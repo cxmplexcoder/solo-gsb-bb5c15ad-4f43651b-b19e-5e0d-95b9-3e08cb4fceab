@@ -13,6 +13,7 @@ from pydantic import BaseModel, Field
 from . import database as db
 from .backfill import BackfillValidationError, plan_backfill
 from .csv_io import CSVParseError, build_audit_csv, parse_scores
+from .leniency import leniency_diagnosis
 from .merge import (
     STATUS_LABELS as MERGE_STATUS_LABELS,
     MergeValidationError,
@@ -328,6 +329,27 @@ def merge_confirm(session_id: str, body: MergeConfirmBody) -> dict[str, Any]:
         "rules_touched": 0,
     }
     return analysis
+
+
+@app.get("/api/sessions/{session_id}/leniency")
+def leniency(session_id: str) -> dict[str, Any]:
+    """评委严宽差异诊断（只读，仅基于原始分）。
+
+    在同一「选手 × 项目」的共评记录上计算每对评委的分差中位数与共评数，
+    以共评数为权重对评委关系图逐连通分量做最小二乘拟合（各分量内偏移量
+    均值为零），返回评委偏移量、共评覆盖量及评委对的观测/拟合分差与残差。
+    无共评边的评委标为不可估计，不跨分量比较。结果只由原始分决定，
+    不随校准范围或人工裁决变化；纯内存计算，不写入任何数据。
+    """
+    with db.get_conn() as conn:
+        if db.get_scope(conn, session_id) is None:
+            raise HTTPException(status_code=404, detail="会话不存在，请先上传数据。")
+        records = db.load_scores(conn, session_id)
+    if not records:
+        raise HTTPException(
+            status_code=404, detail="当前会话没有评分数据，无法进行严宽差异诊断。"
+        )
+    return leniency_diagnosis(records)
 
 
 @app.patch("/api/sessions/{session_id}/scores/{score_id}/decision")
